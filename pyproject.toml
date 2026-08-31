@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "etri-robot-compression"
+version = "0.1.0"
+description = "NetVLAD visual place recognition and model-compression evaluation"
+requires-python = ">=3.10,<3.11"
+dependencies = []
+
+[project.scripts]
+robot-compression = "robot_compression.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -26,6 +26,12 @@ events.out.tfevents.*
 # 데이터 (--mode=cluster 로 재생성, 또는 외부 데이터셋)
 # ─────────────────────────────────────────────────────────────
 
+data/
+artifacts/runs/
+artifacts/cache/
+artifacts/centroids/
+artifacts/torch/
+
 # NetVLAD centroid 초기화 파일 (main*.py --mode=cluster 로 생성, 242MB)
 data/centroids/
 *.hdf5
@@ -55,6 +61,9 @@ venv/
 env/
 ENV/
 
+# 프로젝트별 로컬 환경 설정(.env.example만 추적)
+.env
+
 # ─────────────────────────────────────────────────────────────
 # Jupyter
 # ─────────────────────────────────────────────────────────────
@@ -72,3 +81,6 @@ ENV/
 
 # Claude Code 로컬 권한 설정 (개인 설정, 공유하지 않음)
 .claude/settings.local.json
+
+# 다운로드 중인 임시 파일
+*.part
