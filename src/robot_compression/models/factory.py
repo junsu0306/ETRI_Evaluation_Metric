@@ -57,8 +57,15 @@ def build_encoder(
         frozen = layers[:-1]
         normalized = "resnet18"
     elif normalized in {"mobilenetv2", "mobilenet-v2"}:
+        # The legacy experiments used torchvision's old ``pretrained=True``
+        # behavior, which maps to IMAGENET1K_V1.  New torchvision releases use
+        # IMAGENET1K_V2 for DEFAULT, so selecting V1 explicitly is required for
+        # a meaningful reproduction of the recorded Pittsburgh results.
+        mobilenet_weights = (
+            models.MobileNet_V2_Weights.IMAGENET1K_V1 if pretrained else None
+        )
         source = models.mobilenet_v2(
-            weights=_weights(pretrained, models.MobileNet_V2_Weights)
+            weights=mobilenet_weights
         )
         layers = list(source.features.children())[:-1]
         encoder_dim = 320

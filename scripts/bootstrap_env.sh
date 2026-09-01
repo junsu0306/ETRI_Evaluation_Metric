@@ -6,11 +6,25 @@ cd "${project_root}"
 
 if [[ ! -x .venv/bin/python ]]; then
   if ! python3 -m venv .venv; then
-    if [[ ! -x .venv/bin/python ]]; then
-      printf '%s\n' 'Failed to create .venv and no Python executable was produced.' >&2
-      exit 1
-    fi
+    # Debian may create a partial environment and then fail because ensurepip
+    # is unavailable.  Complete the standard venv scripts without pip; pip is
+    # bootstrapped explicitly below.
+    python3 -m venv --without-pip --upgrade .venv
   fi
+fi
+
+if [[ ! -f .venv/bin/activate ]]; then
+  venv_stdlib="$(python3 -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')"
+  venv_activate_template="${venv_stdlib}/venv/scripts/common/activate"
+  if [[ ! -f "${venv_activate_template}" ]]; then
+    printf 'Missing venv activation template: %s\n' "${venv_activate_template}" >&2
+    exit 1
+  fi
+  sed \
+    -e "s|__VENV_DIR__|${project_root}/.venv|g" \
+    -e 's|__VENV_BIN_NAME__|bin|g' \
+    -e "s|__VENV_PROMPT__|'(etri-robot-compression) '|g" \
+    "${venv_activate_template}" > .venv/bin/activate
 fi
 
 if ! .venv/bin/python -m pip --version >/dev/null 2>&1; then

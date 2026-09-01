@@ -30,4 +30,9 @@ class Paths:
 
 def centroid_path(paths: Paths, arch: str, dataset: str, clusters: int) -> Path:
     safe_arch = arch.replace("-", "")
+    # MobileNetV2 V1 and V2 features are different enough that sharing a
+    # centroid file silently changes the experiment.  Keep the legacy-compatible
+    # V1 revision explicit in its artifact name.
+    if safe_arch == "mobilenetv2":
+        safe_arch = f"{safe_arch}_imagenet1k_v1"
     return paths.centroids_root / f"{safe_arch}_{dataset}_{clusters}_desc_cen.hdf5"

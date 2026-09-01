@@ -82,5 +82,35 @@ ENV/
 # Claude Code 로컬 권한 설정 (개인 설정, 공유하지 않음)
 .claude/settings.local.json
 
+# 로컬 에이전트 지침/도구 설정(작업 머신별 파일)
+/AGENTS.md
+/AGENTS.local.md
+/RULE.md
+/RULES.md
+/CLAUDE.md
+/.agents/
+/.codex/
+
+# 실행 로그와 실험 추적 도구 산출물
+*.log
+*.out
+*.err
+nohup.out
+/log/
+/logs/
+wandb/
+lightning_logs/
+
+# profiler / coverage / crash dump
+*.prof
+*.trace
+*.nsys-rep
+*.qdrep
+.coverage
+.coverage.*
+htmlcov/
+core
+core.*
+
 # 다운로드 중인 임시 파일
 *.part

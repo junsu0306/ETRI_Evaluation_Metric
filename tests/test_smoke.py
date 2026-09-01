@@ -53,3 +53,21 @@ def test_documented_parameter_counts_are_reproduced():
     assert len(kept) == 272
     assert parameter_report(reduced).total == 1_800_352
     assert parameter_report(reduced).trainable == 462_560
+
+
+def test_26_percent_pruning_exceeds_trainable_parameter_target():
+    baseline = build_model(
+        "resnet18", num_clusters=64, pretrained=False, freeze_backbone=True
+    )
+    student = build_model(
+        "mobilenetv2", num_clusters=64, pretrained=False, freeze_backbone=True
+    )
+    prune_mobilenet_v2_last_output(student, 0.26)
+    reduced, kept = apply_mobilenet_v2_reduction(student)
+
+    compression = 1.0 - (
+        parameter_report(reduced).trainable / parameter_report(baseline).trainable
+    )
+    assert len(kept) == 237
+    assert parameter_report(reduced).trainable == 424_410
+    assert compression >= 0.80
