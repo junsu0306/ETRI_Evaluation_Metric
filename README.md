@@ -164,6 +164,7 @@ gradient가 없었습니다. 현재 코드는 gradient를 복구했지만 teache
 
 ## 문서
 
+- [PPT 2장 구성안](docs/PPT_2SLIDE_CONTENT.md)
 - [상세 구현 및 최종 실험 결과](docs/implmentation.md)
 - [전체 실험 진행 기록](docs/EXPERIMENT_SUMMARY.md)
 - [15% GPU 0 재현](docs/REPRODUCTION_GPU0_20260831.md)
