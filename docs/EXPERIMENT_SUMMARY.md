@@ -2,6 +2,10 @@
 
 최종 갱신: 2026-09-01
 
+현재 코드의 pruning/reduction 구현 방법과 최종 결과를 함께 보려면
+[`implmentation.md`](implmentation.md)를 우선 참고한다. 이 문서는 실험 진행
+과정과 구버전 비교 기록을 보존한다.
+
 ## 1. 결론
 
 MobileNetV2 마지막 projection에 `--pruning-ratio 0.26`을 적용하고 30 epoch를

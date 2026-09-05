@@ -39,3 +39,5 @@
 
 26% pruning을 30 epoch 수행한 실제 구조 축소 결과와 모든 비교 실험은
 [`EXPERIMENT_SUMMARY.md`](EXPERIMENT_SUMMARY.md)에 정리돼 있다.
+구현 단위, tensor shape, 학습·pruning·reduction 방법론과 최종 결과를 통합한
+문서는 [`implmentation.md`](implmentation.md)다.
