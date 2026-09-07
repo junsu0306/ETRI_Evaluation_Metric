@@ -44,6 +44,18 @@ optimizer = None
 writer = None
 CSV_FILE = None
 
+# ===== [KD-DIAG] 진단 로그 스위치 (학습 로직에는 영향 없음) =====
+# KD_DIAG=0        -> 진단 로그 완전 비활성
+# KD_DIAG_ITERS=N  -> 각 subset에서 앞 N개 iteration만 출력 (기본 3)
+_KD_DIAG = environ.get("KD_DIAG", "1") == "1"
+_KD_DIAG_ITERS = int(environ.get("KD_DIAG_ITERS", "3"))
+
+# ===== [KD-FIX] student logit 을 no_grad 밖에서 계산할지 선택 =====
+# KD_FIX=0 (기본) -> 구버전 그대로. student 도 no_grad 안 -> KD gradient 0
+# KD_FIX=1        -> student 를 no_grad 밖에서 계산 -> KD gradient 가 실제로 흐름
+# 이 플래그 외에 두 경로의 다른 코드는 완전히 동일하다.
+_KD_FIX = environ.get("KD_FIX", "0") == "1"
+
 
 def distillation_loss(student_logits, teacher_logits, T=4.0):
 
@@ -135,9 +147,29 @@ def train(model, epoch):
                 teacher_feat = teacher_model.encoder(input)
                 teacher_soft_assign_logit = teacher_model.pool.get_soft_assign_logit(
                     teacher_feat)
+                if not _KD_FIX:
+                    # [구버전 원본 경로] student 도 no_grad 안 -> KD gradient 끊김
+                    stu_soft_assign_logit = model.pool.get_soft_assign_logit(
+                        image_encoding)
+            if _KD_FIX:
+                # [KD-FIX 경로] no_grad 밖 -> KD gradient 가 student 로 전달됨
                 stu_soft_assign_logit = model.pool.get_soft_assign_logit(
                     image_encoding)
             # =====================================
+
+            # ===== [KD-DIAG] 그래프 연결 확인 (읽기 전용) =====
+            if _KD_DIAG and iteration <= _KD_DIAG_ITERS:
+                _tag = (f"[KD-DIAG][{'FIX' if _KD_FIX else 'ORIG'}]"
+                        f"[ep{epoch} it{iteration}]")
+                _s = stu_soft_assign_logit
+                _t = teacher_soft_assign_logit
+                print(f"{_tag} student logit : requires_grad={_s.requires_grad} "
+                      f"grad_fn={_s.grad_fn}", flush=True)
+                print(f"{_tag} teacher logit : requires_grad={_t.requires_grad}", flush=True)
+                print(f"{_tag} vlad_encoding : requires_grad={vlad_encoding.requires_grad} "
+                      f"grad_fn={type(vlad_encoding.grad_fn).__name__}", flush=True)
+                print(f"{_tag} shape student={tuple(_s.shape)} teacher={tuple(_t.shape)}",
+                      flush=True)
 
             vladQ, vladP, vladN = torch.split(vlad_encoding, [B, B, nNeg])
             optimizer.zero_grad()
@@ -156,6 +188,42 @@ def train(model, epoch):
             distill_pram = 0.5
             distill_loss = distillation_loss(
                 stu_soft_assign_logit, teacher_soft_assign_logit, T=1.5)
+
+            # ===== [KD-DIAG] KD 항 gradient 기여도 / cluster 정렬 (읽기 전용) =====
+            if _KD_DIAG and iteration <= _KD_DIAG_ITERS:
+                _tag = (f"[KD-DIAG][{'FIX' if _KD_FIX else 'ORIG'}]"
+                        f"[ep{epoch} it{iteration}]")
+                if not distill_loss.requires_grad:
+                    print(f"{_tag} distill_loss.requires_grad=False -> "
+                          f"KD gradient 기여 0 (loss 값={distill_loss.item():.6f})", flush=True)
+                else:
+                    # retain_graph=True 이므로 아래 total_loss.backward()에 영향 없음.
+                    # autograd.grad 는 .grad 에 누적하지 않는다.
+                    _g = torch.autograd.grad(distill_loss, model.pool.conv.weight,
+                                             retain_graph=True, allow_unused=True)[0]
+                    if _g is None:
+                        print(f"{_tag} dKD/d(pool.conv.weight)=None (그래프 미연결)", flush=True)
+                    else:
+                        print(f"{_tag} dKD/d(pool.conv.weight) norm={_g.norm().item():.8f}",
+                              flush=True)
+                with torch.no_grad():
+                    _ps = F.softmax(stu_soft_assign_logit.mean(dim=2) / 1.5, dim=1)
+                    _pt = F.softmax(teacher_soft_assign_logit.mean(dim=2) / 1.5, dim=1)
+                    _es = -(_ps * _ps.clamp_min(1e-12).log()).sum(1).mean().item()
+                    _et = -(_pt * _pt.clamp_min(1e-12).log()).sum(1).mean().item()
+                    _agree = (_ps.argmax(1) == _pt.argmax(1)).float().mean().item()
+                    print(f"{_tag} student p_max={_ps.max().item():.4f} entropy={_es:.4f} | "
+                          f"teacher p_max={_pt.max().item():.4f} entropy={_et:.4f}", flush=True)
+                    print(f"{_tag} 최빈 cluster 일치율={_agree:.4f} "
+                          f"(무작위 기대값={1.0/_ps.shape[1]:.4f}) "
+                          f"student={_ps.argmax(1)[:5].tolist()} "
+                          f"teacher={_pt.argmax(1)[:5].tolist()}", flush=True)
+
+            # ===== [KD-DIAG] 손실 추이 (tensorboard) =====
+            if _KD_DIAG and writer is not None and iteration % 50 == 0:
+                _step = (epoch - 1) * nBatches + iteration
+                writer.add_scalar('KD_DIAG/triplet', loss.item(), _step)
+                writer.add_scalar('KD_DIAG/distill', distill_loss.item(), _step)
 
             total_loss = (1-distill_pram)*loss + distill_pram*distill_loss
             total_loss.backward()
