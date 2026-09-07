@@ -170,3 +170,4 @@ gradient가 없었습니다. 현재 코드는 gradient를 복구했지만 teache
 - [15% GPU 0 재현](docs/REPRODUCTION_GPU0_20260831.md)
 - [아키텍처와 구버전 대응](docs/ARCHITECTURE.md)
 - [Pittsburgh 데이터셋](docs/DATASET.md)
+- [구버전 실험 감사 — ResNet test 이상치와 MobileNetV3 현황](docs/LEGACY_AUDIT_20260907.md)
