@@ -64,6 +64,88 @@ def prune_mobilenet_v2_last_output(
     return prune_indices
 
 
+def _mobilenet_v3_large_last_expansion(model: PlaceRecognitionModel):
+    if model.arch != "mobilenetv3-large":
+        raise ValueError("Expected a mobilenetv3-large model")
+    block = model.encoder[-1].block
+    expansion_conv = block[0][0]
+    expansion_bn = block[0][1]
+    depthwise_conv = block[1][0]
+    depthwise_bn = block[1][1]
+    squeeze_excitation = block[2]
+    projection_conv = block[3][0]
+    if not (
+        isinstance(expansion_conv, nn.Conv2d)
+        and isinstance(expansion_bn, nn.BatchNorm2d)
+        and isinstance(depthwise_conv, nn.Conv2d)
+        and isinstance(depthwise_bn, nn.BatchNorm2d)
+        and isinstance(squeeze_excitation.fc1, nn.Conv2d)
+        and isinstance(squeeze_excitation.fc2, nn.Conv2d)
+        and isinstance(projection_conv, nn.Conv2d)
+    ):
+        raise TypeError("Unexpected torchvision MobileNetV3-Large last-block layout")
+    return (
+        expansion_conv,
+        expansion_bn,
+        depthwise_conv,
+        depthwise_bn,
+        squeeze_excitation,
+        projection_conv,
+    )
+
+
+def prune_mobilenet_v3_large_last_expansion(
+    model: PlaceRecognitionModel, ratio: float
+) -> torch.Tensor:
+    """Zero a dependency-complete set of hidden channels in the last block."""
+    if not 0.0 <= ratio < 1.0:
+        raise ValueError("Pruning ratio must satisfy 0 <= ratio < 1")
+    (
+        expansion_conv,
+        expansion_bn,
+        depthwise_conv,
+        depthwise_bn,
+        squeeze_excitation,
+        projection_conv,
+    ) = _mobilenet_v3_large_last_expansion(model)
+    norms = expansion_conv.weight.detach().flatten(1).norm(p=2, dim=1)
+    prune_count = int(norms.numel() * ratio)
+    if prune_count == 0:
+        return torch.empty(0, dtype=torch.long, device=norms.device)
+    prune_indices = torch.topk(norms, prune_count, largest=False).indices
+    with torch.no_grad():
+        expansion_conv.weight[prune_indices] = 0
+        if expansion_conv.bias is not None:
+            expansion_conv.bias[prune_indices] = 0
+        expansion_bn.weight[prune_indices] = 0
+        expansion_bn.bias[prune_indices] = 0
+        expansion_bn.running_mean[prune_indices] = 0
+        expansion_bn.running_var[prune_indices] = 1
+
+        depthwise_conv.weight[prune_indices] = 0
+        if depthwise_conv.bias is not None:
+            depthwise_conv.bias[prune_indices] = 0
+        depthwise_bn.weight[prune_indices] = 0
+        depthwise_bn.bias[prune_indices] = 0
+        depthwise_bn.running_mean[prune_indices] = 0
+        depthwise_bn.running_var[prune_indices] = 1
+
+        squeeze_excitation.fc1.weight[:, prune_indices] = 0
+        squeeze_excitation.fc2.weight[prune_indices] = 0
+        if squeeze_excitation.fc2.bias is not None:
+            squeeze_excitation.fc2.bias[prune_indices] = 0
+        projection_conv.weight[:, prune_indices] = 0
+    return prune_indices
+
+
+def prune_model(model: PlaceRecognitionModel, ratio: float) -> torch.Tensor:
+    if model.arch == "mobilenetv2":
+        return prune_mobilenet_v2_last_output(model, ratio)
+    if model.arch == "mobilenetv3-large":
+        return prune_mobilenet_v3_large_last_expansion(model, ratio)
+    raise ValueError(f"Structural pruning is unsupported for {model.arch}")
+
+
 def _new_conv_with_selected_outputs(
     source: nn.Conv2d, output_indices: torch.Tensor
 ) -> nn.Conv2d:
@@ -132,6 +214,52 @@ def _new_pool_conv(source: nn.Conv2d, input_indices: torch.Tensor) -> nn.Conv2d:
     return target
 
 
+def _new_depthwise_conv(source: nn.Conv2d, indices: torch.Tensor) -> nn.Conv2d:
+    target = nn.Conv2d(
+        in_channels=len(indices),
+        out_channels=len(indices),
+        kernel_size=source.kernel_size,
+        stride=source.stride,
+        padding=source.padding,
+        dilation=source.dilation,
+        groups=len(indices),
+        bias=source.bias is not None,
+        padding_mode=source.padding_mode,
+    ).to(device=source.weight.device, dtype=source.weight.dtype)
+    with torch.no_grad():
+        target.weight.copy_(source.weight[indices])
+        if source.bias is not None:
+            target.bias.copy_(source.bias[indices])
+    target.weight.requires_grad = source.weight.requires_grad
+    if target.bias is not None and source.bias is not None:
+        target.bias.requires_grad = source.bias.requires_grad
+    return target
+
+
+def _new_conv_with_selected_inputs(
+    source: nn.Conv2d, input_indices: torch.Tensor
+) -> nn.Conv2d:
+    target = nn.Conv2d(
+        in_channels=len(input_indices),
+        out_channels=source.out_channels,
+        kernel_size=source.kernel_size,
+        stride=source.stride,
+        padding=source.padding,
+        dilation=source.dilation,
+        groups=source.groups,
+        bias=source.bias is not None,
+        padding_mode=source.padding_mode,
+    ).to(device=source.weight.device, dtype=source.weight.dtype)
+    with torch.no_grad():
+        target.weight.copy_(source.weight[:, input_indices])
+        if source.bias is not None:
+            target.bias.copy_(source.bias)
+    target.weight.requires_grad = source.weight.requires_grad
+    if target.bias is not None and source.bias is not None:
+        target.bias.requires_grad = source.bias.requires_grad
+    return target
+
+
 def apply_mobilenet_v2_reduction(
     model: PlaceRecognitionModel, kept_indices: Iterable[int] | torch.Tensor | None = None
 ) -> tuple[PlaceRecognitionModel, list[int]]:
@@ -161,3 +289,64 @@ def apply_mobilenet_v2_reduction(
     reduced.pool.dim = len(indices)
     reduced.encoder_dim = len(indices)
     return reduced, indices.detach().cpu().tolist()
+
+
+def apply_mobilenet_v3_large_reduction(
+    model: PlaceRecognitionModel,
+    kept_indices: Iterable[int] | torch.Tensor | None = None,
+) -> tuple[PlaceRecognitionModel, list[int]]:
+    (
+        expansion_conv,
+        _,
+        _,
+        _,
+        _,
+        _,
+    ) = _mobilenet_v3_large_last_expansion(model)
+    if kept_indices is None:
+        norms = expansion_conv.weight.detach().flatten(1).norm(p=2, dim=1)
+        indices = torch.where(norms != 0)[0]
+    else:
+        indices = torch.as_tensor(
+            list(kept_indices)
+            if not isinstance(kept_indices, torch.Tensor)
+            else kept_indices,
+            dtype=torch.long,
+            device=expansion_conv.weight.device,
+        )
+    if indices.numel() == 0:
+        raise ValueError("Reduction cannot remove every expansion channel")
+
+    reduced = copy.deepcopy(model)
+    (
+        source_expansion_conv,
+        source_expansion_bn,
+        source_depthwise_conv,
+        source_depthwise_bn,
+        source_se,
+        source_projection_conv,
+    ) = _mobilenet_v3_large_last_expansion(model)
+    reduced_block = reduced.encoder[-1].block
+    reduced_block[0][0] = _new_conv_with_selected_outputs(
+        source_expansion_conv, indices
+    )
+    reduced_block[0][1] = _new_batch_norm(source_expansion_bn, indices)
+    reduced_block[1][0] = _new_depthwise_conv(source_depthwise_conv, indices)
+    reduced_block[1][1] = _new_batch_norm(source_depthwise_bn, indices)
+    reduced_block[2].fc1 = _new_conv_with_selected_inputs(source_se.fc1, indices)
+    reduced_block[2].fc2 = _new_conv_with_selected_outputs(source_se.fc2, indices)
+    reduced_block[3][0] = _new_conv_with_selected_inputs(
+        source_projection_conv, indices
+    )
+    return reduced, indices.detach().cpu().tolist()
+
+
+def apply_structural_reduction(
+    model: PlaceRecognitionModel,
+    kept_indices: Iterable[int] | torch.Tensor | None = None,
+) -> tuple[PlaceRecognitionModel, list[int]]:
+    if model.arch == "mobilenetv2":
+        return apply_mobilenet_v2_reduction(model, kept_indices)
+    if model.arch == "mobilenetv3-large":
+        return apply_mobilenet_v3_large_reduction(model, kept_indices)
+    raise ValueError(f"Structural reduction is unsupported for {model.arch}")

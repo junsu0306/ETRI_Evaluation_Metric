@@ -71,6 +71,22 @@ def build_encoder(
         encoder_dim = 320
         frozen = layers[:-1]
         normalized = "mobilenetv2"
+    elif normalized in {"mobilenetv3-large", "mobilenet-v3-large"}:
+        # Match the old torchvision ``pretrained=True`` initialization used by
+        # the imported experiments.  The final 160->960 convolution and the
+        # classifier are omitted, leaving the last residual block's 160-channel
+        # output for NetVLAD.
+        source = models.mobilenet_v3_large(
+            weights=(
+                models.MobileNet_V3_Large_Weights.IMAGENET1K_V1
+                if pretrained
+                else None
+            )
+        )
+        layers = list(source.features.children())[:-1]
+        encoder_dim = 160
+        frozen = layers[:-1]
+        normalized = "mobilenetv3-large"
     elif normalized in {"mobilenetv3", "mobilenetv3-small", "mobilenet-v3-small"}:
         source = models.mobilenet_v3_small(
             weights=_weights(pretrained, models.MobileNet_V3_Small_Weights)

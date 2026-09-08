@@ -5,6 +5,7 @@ from robot_compression.config import Paths, centroid_path
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import random
@@ -19,9 +20,9 @@ import torch.nn as nn
 from tensorboardX import SummaryWriter
 
 from robot_compression.compression import (
-    apply_mobilenet_v2_reduction,
+    apply_structural_reduction,
     parameter_report,
-    prune_mobilenet_v2_last_output,
+    prune_model,
 )
 from robot_compression.data import (
     get_training_query_set,
@@ -30,11 +31,23 @@ from robot_compression.data import (
     validate_layout,
 )
 from robot_compression.models import build_model, load_centroids
-from robot_compression.training import build_clusters, evaluate, train_one_epoch
-from robot_compression.training.engine import distillation_loss
+from robot_compression.training import (
+    build_clusters,
+    build_feature_cache,
+    evaluate,
+    relational_distillation_loss,
+    train_one_epoch,
+)
 
 
-ARCHITECTURES = ["alexnet", "vgg16", "resnet18", "mobilenetv2", "mobilenetv3-small"]
+ARCHITECTURES = [
+    "alexnet",
+    "vgg16",
+    "resnet18",
+    "mobilenetv2",
+    "mobilenetv3-small",
+    "mobilenetv3-large",
+]
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -52,13 +65,29 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cache-batch-size", type=int, default=16)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=30,
+        help="Stop after this many non-improving R@5 epochs; 0 disables early stopping",
+    )
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-3)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--margin", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--kd-weight", type=float, default=0.5)
-    parser.add_argument("--temperature", type=float, default=1.5)
+    parser.add_argument(
+        "--kd-weight",
+        type=float,
+        default=0.5,
+        help="Weight of dimension-independent query-ranking KD added to triplet loss",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.1,
+        help="Softmax temperature for query-ranking KD",
+    )
     parser.add_argument("--pruning", action="store_true")
     parser.add_argument("--pruning-ratio", type=float, default=0.15)
     parser.add_argument("--from-scratch", action="store_true")
@@ -97,6 +126,9 @@ def checkpoint_payload(model, args, epoch: int = 0, best_recall: float = 0.0, **
         "pruning": bool(args.pruning),
         "pruning_ratio": float(args.pruning_ratio),
         "kd_weight": float(args.kd_weight),
+        "kd_method": "relational-ranking-v1",
+        "kd_objective": "convex-combination-v1",
+        "temperature": float(args.temperature),
         "state_dict": model.state_dict(),
         **extra,
     }
@@ -154,6 +186,14 @@ def _append_epoch_metrics(path: Path, row: dict[str, object]) -> None:
         writer.writerow(row)
 
 
+def _checkpoint_cache_key(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:16]
+
+
 def load_model_checkpoint(path: Path, device: torch.device, pretrained: bool = False):
     payload = torch.load(path, map_location="cpu", weights_only=True)
     model = build_model(
@@ -165,7 +205,7 @@ def load_model_checkpoint(path: Path, device: torch.device, pretrained: bool = F
     )
     kept = payload.get("reduction_indices")
     if kept is not None:
-        model, _ = apply_mobilenet_v2_reduction(model, kept)
+        model, _ = apply_structural_reduction(model, kept)
     model.load_state_dict(payload["state_dict"])
     return model.to(device), payload
 
@@ -202,10 +242,10 @@ def run_smoke(args, device: torch.device) -> None:
     before = parameter_report(model)
     print(f"parameters_before={before.to_dict()}")
 
-    if model.arch == "mobilenetv2" and args.pooling == "netvlad":
-        prune_mobilenet_v2_last_output(model, args.pruning_ratio)
+    if model.arch in {"mobilenetv2", "mobilenetv3-large"} and args.pooling == "netvlad":
+        prune_model(model, args.pruning_ratio)
         pruned = parameter_report(model)
-        reduced, kept = apply_mobilenet_v2_reduction(model)
+        reduced, kept = apply_structural_reduction(model)
         reduced_output = reduced(sample)
         after = parameter_report(reduced)
         print(f"parameters_pruned={pruned.to_dict()}")
@@ -213,11 +253,17 @@ def run_smoke(args, device: torch.device) -> None:
         print(f"reduced_forward_shape={tuple(reduced_output.shape)}")
 
         model.zero_grad(set_to_none=True)
-        student_features = model.encoder(sample)
-        student_logits = model.pool.get_soft_assign_logit(student_features)
+        kd_samples = torch.randn(4, 3, 224, 224, device=device)
+        student_embedding = model(kd_samples)
         with torch.no_grad():
-            teacher_logits = student_logits.detach() + 0.01 * torch.randn_like(student_logits)
-        kd = distillation_loss(student_logits, teacher_logits, args.temperature)
+            teacher_embedding = torch.randn(4, 13, device=device)
+        kd = relational_distillation_loss(
+            student_embedding,
+            teacher_embedding,
+            query_count=1,
+            negative_counts=torch.tensor([2]),
+            temperature=args.temperature,
+        )
         kd.backward()
         gradient = model.pool.conv.weight.grad
         if gradient is None or gradient.norm() == 0:
@@ -276,10 +322,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "test":
         if args.checkpoint is None:
             raise ValueError("--checkpoint is required for test mode")
-        model, _ = load_model_checkpoint(args.checkpoint, device)
+        model, payload = load_model_checkpoint(args.checkpoint, device)
         dataset = get_whole_set(args.split, paths.pittsburgh_root)
         recalls = evaluate(model, dataset, device, args.cache_batch_size, args.workers)
-        print(json.dumps({f"recall@{rank}": value for rank, value in recalls.items()}, indent=2))
+        result = {
+            "checkpoint": str(args.checkpoint),
+            "checkpoint_epoch": int(payload.get("epoch", 0)),
+            "split": args.split,
+            "recalls": {f"recall@{rank}": value for rank, value in recalls.items()},
+            "parameter_report": parameter_report(model).to_dict(),
+        }
+        if args.output is not None:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(result, indent=2))
+            print(f"evaluation={args.output}")
+        print(json.dumps(result, indent=2))
         return 0
 
     if args.mode == "reduce":
@@ -287,8 +344,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--checkpoint is required for reduce mode")
         model, payload = load_model_checkpoint(args.checkpoint, device)
         if args.pruning_ratio > 0:
-            prune_mobilenet_v2_last_output(model, args.pruning_ratio)
-        reduced, kept = apply_mobilenet_v2_reduction(model)
+            prune_model(model, args.pruning_ratio)
+        reduced, kept = apply_structural_reduction(model)
         output = args.output or args.checkpoint.with_name(
             f"{args.checkpoint.stem}_reduced.pt"
         )
@@ -314,13 +371,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.kd_weight > 0 and args.teacher_checkpoint is None:
         raise ValueError("--teacher-checkpoint is required when --kd-weight is positive")
+    if not 0.0 <= args.kd_weight <= 1.0:
+        raise ValueError("--kd-weight must satisfy 0 <= value <= 1")
+    if args.patience < 0:
+        raise ValueError("--patience must be non-negative")
     whole_train = get_whole_training_set(paths.pittsburgh_root)
     train_dataset = get_training_query_set(paths.pittsburgh_root, args.margin)
     validation = get_whole_set("val", paths.pittsburgh_root)
     if args.kd_weight > 0 and args.pooling != "netvlad":
         raise ValueError("Knowledge distillation currently requires --pooling netvlad")
-    if args.pruning and args.arch != "mobilenetv2":
-        raise ValueError("Structural pruning currently supports --arch mobilenetv2 only")
+    if args.pruning and args.arch not in {"mobilenetv2", "mobilenetv3-large"}:
+        raise ValueError(
+            "Structural pruning supports mobilenetv2 and mobilenetv3-large only"
+        )
 
     resume_payload = None
     if args.checkpoint is not None:
@@ -342,6 +405,19 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("Resume pruning ratio does not match --pruning-ratio")
         if abs(float(resume_payload.get("kd_weight", 0.0)) - args.kd_weight) > 1e-12:
             raise ValueError("Resume KD weight does not match --kd-weight")
+        if args.kd_weight > 0 and resume_payload.get("kd_method") != "relational-ranking-v1":
+            raise ValueError("Resume checkpoint does not use relational-ranking-v1 KD")
+        if (
+            args.kd_weight > 0
+            and resume_payload.get("kd_objective") != "convex-combination-v1"
+        ):
+            raise ValueError("Resume checkpoint does not use convex-combination-v1 KD")
+        checkpoint_temperature = float(resume_payload.get("temperature", 0.1))
+        if (
+            args.kd_weight > 0
+            and abs(checkpoint_temperature - args.temperature) > 1e-12
+        ):
+            raise ValueError("Resume KD temperature does not match --temperature")
     else:
         model = build_model(
             args.arch,
@@ -377,16 +453,19 @@ def main(argv: list[str] | None = None) -> int:
         start_epoch = int(resume_payload["epoch"])
         best = float(resume_payload.get("best_recall", 0.0))
         best_r1 = float(resume_payload.get("best_recall_at_1", 0.0))
+        not_improved = int(resume_payload.get("not_improved", 0))
         run_dir = args.checkpoint.resolve().parent.parent
     else:
         start_epoch = 0
         best = 0.0
         best_r1 = 0.0
+        not_improved = 0
         pruning_tag = (
             f"_prune{str(args.pruning_ratio).replace('.', 'p')}" if args.pruning else ""
         )
+        kd_tag = f"_kdrel{str(args.kd_weight).replace('.', 'p')}" if args.kd_weight > 0 else ""
         run_dir = paths.runs_root / datetime.now().strftime(
-            f"%Y%m%d_%H%M%S_{model.arch}_{args.pooling}{pruning_tag}"
+            f"%Y%m%d_%H%M%S_{model.arch}_{args.pooling}{pruning_tag}{kd_tag}"
         )
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -395,10 +474,29 @@ def main(argv: list[str] | None = None) -> int:
         (run_dir / "config.json").write_text(json.dumps(vars(args), default=str, indent=2))
     _write_run_metadata(run_dir, args, paths, resumed=resume_payload is not None)
     metrics_path = run_dir / "metrics.csv"
+    teacher_cache_path = None
+    if args.kd_weight > 0:
+        cache_key = _checkpoint_cache_key(args.teacher_checkpoint)
+        teacher_cache_path = (
+            paths.cache_root / f"teacher_{cache_key}_pitts30k_train.hdf5"
+        )
+        if not teacher_cache_path.is_file():
+            print(f"building_teacher_cache={teacher_cache_path}")
+            build_feature_cache(
+                teacher,
+                whole_train,
+                teacher_cache_path,
+                device,
+                args.cache_batch_size,
+                args.workers,
+            )
+        print(f"teacher_cache={teacher_cache_path}")
+        teacher = teacher.cpu()
+        torch.cuda.empty_cache()
     try:
         for epoch in range(start_epoch + 1, args.epochs + 1):
             epoch_learning_rate = optimizer.param_groups[0]["lr"]
-            loss = train_one_epoch(
+            losses = train_one_epoch(
                 model,
                 teacher,
                 train_dataset,
@@ -406,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
                 optimizer,
                 criterion,
                 device,
-                paths.cache_root / "pitts30k_train_features.hdf5",
+                paths.cache_root / f"{run_dir.name}_pitts30k_train_features.hdf5",
                 args.batch_size,
                 args.cache_batch_size,
                 args.workers,
@@ -414,13 +512,17 @@ def main(argv: list[str] | None = None) -> int:
                 temperature=args.temperature,
                 pruning=args.pruning,
                 pruning_ratio=args.pruning_ratio,
+                teacher_cache_path=teacher_cache_path,
             )
             recalls = evaluate(model, validation, device, args.cache_batch_size, args.workers)
-            writer.add_scalar("train/loss", loss, epoch)
+            writer.add_scalar("train/loss", losses.total, epoch)
+            writer.add_scalar("train/triplet_loss", losses.triplet, epoch)
+            writer.add_scalar("train/kd_loss", losses.kd, epoch)
             for rank, value in recalls.items():
                 writer.add_scalar(f"val/recall@{rank}", value, epoch)
             is_best = recalls[5] > best
             is_best_r1 = recalls[1] > best_r1
+            not_improved = 0 if is_best else not_improved + 1
             best = max(best, recalls[5])
             best_r1 = max(best_r1, recalls[1])
             report = parameter_report(model)
@@ -431,9 +533,15 @@ def main(argv: list[str] | None = None) -> int:
                 epoch=epoch,
                 best_recall=best,
                 best_recall_at_1=best_r1,
+                not_improved=not_improved,
                 optimizer=optimizer.state_dict(),
                 scheduler=scheduler.state_dict(),
                 learning_rate=epoch_learning_rate,
+                losses={
+                    "total": losses.total,
+                    "triplet": losses.triplet,
+                    "kd": losses.kd,
+                },
                 recalls=recalls,
                 parameter_report=report.to_dict(),
             )
@@ -444,7 +552,9 @@ def main(argv: list[str] | None = None) -> int:
                 torch.save(payload, checkpoint_dir / "best_r1.pt")
             row = {
                 "epoch": epoch,
-                "loss": loss,
+                "loss": losses.total,
+                "triplet_loss": losses.triplet,
+                "kd_loss": losses.kd,
                 "learning_rate": epoch_learning_rate,
                 "recall_at_1": recalls[1],
                 "recall_at_5": recalls[5],
@@ -460,6 +570,12 @@ def main(argv: list[str] | None = None) -> int:
             }
             _append_epoch_metrics(metrics_path, row)
             print(json.dumps(row), flush=True)
+            if args.patience > 0 and not_improved > args.patience:
+                print(
+                    f"early_stopping=R@5 did not improve for {not_improved} epochs",
+                    flush=True,
+                )
+                break
     finally:
         writer.close()
     print(f"run_dir={run_dir}")

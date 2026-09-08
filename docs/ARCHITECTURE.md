@@ -4,8 +4,10 @@
 
 1. `cluster`: CNN local descriptor 50,000개를 표본화하고 Faiss K-means로 NetVLAD centroid를 만든다.
 2. `train`: 전체 train descriptor cache를 생성하고 hard-positive/hard-negative triplet을 채굴한다.
-3. student의 triplet loss와 teacher/student soft-assignment KD loss를 함께 역전파한다.
-4. `--pruning`이 지정된 경우 MobileNetV2 마지막 projection output을 지정 비율로 zeroing한다.
+3. 최종 NetVLAD descriptor로 만든 query–candidate cosine similarity 분포에 관계 KD를 적용한다.
+   현재 loss는 `(1 - kd_weight) * triplet + kd_weight * KD`이며 student에만 gradient가 흐른다.
+4. `--pruning`이 지정된 경우 MobileNetV2 마지막 projection output 또는
+   MobileNetV3-Large 마지막 블록의 expansion channel을 지정 비율로 zeroing한다.
 5. `reduce`: zero filter를 실제 채널에서 제거하고 NetVLAD assignment convolution과 centroid 차원도 함께 줄인다.
 6. `test`: database/query descriptor를 생성하고 Faiss L2 검색으로 Recall@N을 계산한다.
 
@@ -25,8 +27,10 @@
 - student KD logits를 `no_grad` 밖에서 계산해 KD gradient가 student로 흐르게 했다.
 - 단, 구버전은 student logits까지 `no_grad` 안에서 계산해 실제 KD gradient가
   없었다. 서로 독립적으로 생성한 teacher/student K-means cluster 번호도 정렬돼
-  있지 않으므로 현재 soft-assignment KD는 구버전 재현값으로 간주하지 않는다.
+  있지 않으므로 soft-assignment KD는 구버전 재현값으로 간주하지 않는다.
   2026-08-31 재현 비교는 `--kd-weight 0`의 triplet + pruning으로 수행했다.
+- 2026-09-08 종료한 관계 KD 실험은 cluster logit 직접 정렬을 사용하지 않는다.
+  [최신 구현 및 대조실험 결과](KD_ABLATION_FINAL_20260908.md)에 수식과 결과를 기록했다.
 - 프루닝을 `--pruning` 사용 시에만 실행하고 `--pruning-ratio` 값을 적용한다.
 - test 시 임의의 `reduced_model.pth`를 강제로 읽지 않고 명시된 checkpoint만 사용한다.
 - 구버전 `pretrained=True` 조건을 재현하기 위해 MobileNetV2 backbone은

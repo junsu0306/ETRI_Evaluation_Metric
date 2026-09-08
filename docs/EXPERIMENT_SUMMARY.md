@@ -1,6 +1,11 @@
 # 로봇 압축 실험 종합 보고서
 
-최종 갱신: 2026-09-01
+이 문서의 실험 본문 기준일: 2026-09-01. 최신 결과 안내 추가: 2026-09-08.
+
+최근 MobileNetV2 15% pruning 관계 KD/KD-off 두 학습은 사용자 요청으로 종료했다.
+R@1-selected validation은 KD-on 82.0978% (epoch 37), KD-off 79.0089% (epoch 3)다.
+구현과 전체 epoch 기록은 [2026-09-08 상세 보고서](KD_ABLATION_FINAL_20260908.md)를
+참고한다. 아래 26% 실험의 test 결과와 이번 15% validation 결과는 구분한다.
 
 현재 코드의 pruning/reduction 구현 방법과 최종 결과를 함께 보려면
 [`implmentation.md`](implmentation.md)를 우선 참고한다. 이 문서는 실험 진행

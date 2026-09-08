@@ -1,11 +1,31 @@
 # ETRI Robot Compression Evaluation
 
 Pittsburgh30k 장소 인식 모델의 pruning과 실제 구조 축소 효과를 평가하는
-프로젝트입니다. 현재 기준 파이프라인은
-**MobileNetV2 (ImageNet V1) + NetVLAD 64 clusters**이며, 26% pruning을 30
-epoch 수행했습니다.
+프로젝트입니다. 최근 수행한 **MobileNetV2 + NetVLAD 관계 KD / KD-off 대조실험**은
+2026-09-08 사용자 요청으로 두 학습과 소속 worker를 모두 종료했습니다.
 
-## 핵심 결과
+## 최근 결과: 15% pruning, 관계 KD 대조실험
+
+완료된 epoch 중 validation R@1 최고점을 기준으로 정리한 결과입니다.
+
+| 조건 | 완료 epoch | 선택 epoch | Val R@1 | Val R@5 | Val R@10 | Val R@20 |
+|---|---:|---:|---:|---:|---:|---:|
+| KD-on (0.5) | 63 | 37 | **82.0978%** | 93.7040% | 96.0962% | 97.8049% |
+| KD-off (0) | 19 | 3 | **79.0089%** | 92.1924% | 94.9527% | 96.9111% |
+
+R@1 차이는 **+3.0889%p**이며, 첫 19 epoch만 비교해도 +3.0757%p입니다.
+이는 zero-pruned 모델의 validation 결과입니다. 두 student의 test 및 실제 구조
+축소 후 Recall은 아직 측정하지 않았습니다. KD-off에서는 triplet loss 계수도
+0.5에서 1로 바뀌므로, KD 항만의 독립적인 효과로 단정하지 않습니다.
+
+구현·수식·checkpoint·모든 epoch 결과와 한계는
+[상세 최종 보고서](docs/KD_ABLATION_FINAL_20260908.md),
+수치 원본을 합친 표는 [전체 epoch CSV](docs/assets/kd_ablation_20260908_metrics.csv)에 있습니다.
+
+MobileNetV3-Large의 trainable parameter 압축률 72%·76%·80% 비교는
+[기존 V3-Large 실험 계획](docs/FINAL_V3_LARGE_EXPERIMENT_PLAN.md)으로 보존하며 현재 보류 상태입니다.
+
+## 이전 결과: 26% pruning, 구조 축소 완료
 
 - MobileNetV2 마지막 projection: 320 → 237채널
 - 실제 제거량: 83/320채널, 25.9375%
@@ -155,15 +175,20 @@ data/               # 데이터셋, Git 제외
 trash/legacy/       # 옮겨온 구버전 코드
 ```
 
-## 주의사항
+## KD 주의사항
 
-구버전 KD 코드는 student logits도 <code>no_grad</code> 안에서 계산해 실제 KD
-gradient가 없었습니다. 현재 코드는 gradient를 복구했지만 teacher/student의
-독립 K-means cluster 번호가 정렬되지 않는 문제가 남아 있습니다. 따라서 공식
-재현 실험은 <code>--kd-weight 0</code>의 triplet 학습으로 수행했습니다.
+구버전 KD 코드는 student logits까지 <code>no_grad</code>에서 계산했고 서로 다른
+NetVLAD centroid의 cluster 번호도 직접 비교했습니다. 최종 실험은 이 방식을
+사용하지 않습니다. query와 positive/hard negatives 사이의 cosine 검색 분포를
+KL divergence로 맞추는 차원 독립적인 관계 KD를 사용합니다. 현재 학습 코드의 loss는
+<code>(1 − λ) × triplet + λ × KD</code>이며, 이번 KD-on은 λ=0.5,
+KD-off는 λ=0입니다. 기존 V3 계획 문서의 additive loss는 이번 V2 실행식과
+구분해야 합니다. feature projection KD는 이번 대조실험에 사용하지 않았습니다.
 
 ## 문서
 
+- [관계 KD / KD-off 상세 최종 보고서 (2026-09-08)](docs/KD_ABLATION_FINAL_20260908.md)
+- [KD-off 대조실험 실행·종료 기록](docs/KD_OFF_CONTROL_20260908.md)
 - [PPT 2장 구성안](docs/PPT_2SLIDE_CONTENT.md)
 - [상세 구현 및 최종 실험 결과](docs/implmentation.md)
 - [전체 실험 진행 기록](docs/EXPERIMENT_SUMMARY.md)

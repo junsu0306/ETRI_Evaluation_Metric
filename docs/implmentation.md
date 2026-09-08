@@ -1,5 +1,9 @@
 # MobileNetV2 + NetVLAD pruning 구현 및 실험 결과
 
+> 이 문서는 이전 26% pruning 실험 기록이다. 2026-09-08 종료한 15% pruning
+> 관계 KD/KD-off의 최신 구현식과 validation 결과는
+> [상세 최종 보고서](KD_ABLATION_FINAL_20260908.md)를 참고한다.
+
 최종 갱신: 2026-09-05
 주요 실행: 2026-08-31 ~ 2026-09-01
 
