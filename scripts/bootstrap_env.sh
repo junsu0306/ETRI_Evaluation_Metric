@@ -4,17 +4,24 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${project_root}"
 
+python_bin="${PYTHON_BIN:-python3.10}"
 if [[ ! -x .venv/bin/python ]]; then
-  if ! python3 -m venv .venv; then
+  if ! command -v "${python_bin}" >/dev/null 2>&1; then
+    printf 'Python 3.10 is required. Set PYTHON_BIN to its executable.\n' >&2
+    exit 1
+  fi
+  if ! "${python_bin}" -m venv .venv; then
     # Debian may create a partial environment and then fail because ensurepip
     # is unavailable.  Complete the standard venv scripts without pip; pip is
     # bootstrapped explicitly below.
-    python3 -m venv --without-pip --upgrade .venv
+    "${python_bin}" -m venv --without-pip --upgrade .venv
   fi
 fi
 
+.venv/bin/python -c 'import sys; assert sys.version_info[:2] == (3, 10), "Python 3.10 is required"'
+
 if [[ ! -f .venv/bin/activate ]]; then
-  venv_stdlib="$(python3 -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')"
+  venv_stdlib="$(.venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')"
   venv_activate_template="${venv_stdlib}/venv/scripts/common/activate"
   if [[ ! -f "${venv_activate_template}" ]]; then
     printf 'Missing venv activation template: %s\n' "${venv_activate_template}" >&2

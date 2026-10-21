@@ -1,0 +1,17 @@
+{
+  "checkpoint": "artifacts/runs/20260908_112757_mobilenetv2_netvlad_prune0p15/checkpoints/best_r1.pt",
+  "checkpoint_epoch": 3,
+  "split": "test",
+  "recalls": {
+    "recall@1": 0.7610035211267606,
+    "recall@5": 0.886150234741784,
+    "recall@10": 0.9185739436619719,
+    "recall@20": 0.9449823943661971
+  },
+  "parameter_report": {
+    "total": 1852672,
+    "trainable": 514880,
+    "nonzero": 1806496,
+    "zero": 46176
+  }
+}

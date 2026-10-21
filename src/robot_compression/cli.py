@@ -58,6 +58,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--teacher-checkpoint", type=Path)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--run-dir", type=Path, help="New training run directory (must not exist)")
     parser.add_argument("--split", choices=["train", "val", "test", "val250k", "test250k"], default="val")
     parser.add_argument("--pooling", choices=["netvlad", "max", "avg"], default="netvlad")
     parser.add_argument("--num-clusters", type=int, default=64)
@@ -69,8 +70,9 @@ def create_parser() -> argparse.ArgumentParser:
         "--patience",
         type=int,
         default=30,
-        help="Stop after this many non-improving R@5 epochs; 0 disables early stopping",
+        help="Stop after this many consecutive non-improving epochs; 0 disables early stopping",
     )
+    parser.add_argument("--early-stop-rank", type=int, choices=[1, 5], default=5)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-3)
     parser.add_argument("--momentum", type=float, default=0.9)
@@ -80,7 +82,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--kd-weight",
         type=float,
         default=0.5,
-        help="Weight of dimension-independent query-ranking KD added to triplet loss",
+        help="Lambda in (1-lambda)*triplet + lambda*query-ranking KD",
     )
     parser.add_argument(
         "--temperature",
@@ -375,6 +377,11 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--kd-weight must satisfy 0 <= value <= 1")
     if args.patience < 0:
         raise ValueError("--patience must be non-negative")
+    if args.run_dir is not None:
+        if args.checkpoint is not None:
+            raise ValueError("Use --checkpoint alone when resuming an existing run")
+        if args.run_dir.exists():
+            raise FileExistsError(f"Refusing to overwrite run directory: {args.run_dir}")
     whole_train = get_whole_training_set(paths.pittsburgh_root)
     train_dataset = get_training_query_set(paths.pittsburgh_root, args.margin)
     validation = get_whole_set("val", paths.pittsburgh_root)
@@ -454,12 +461,16 @@ def main(argv: list[str] | None = None) -> int:
         best = float(resume_payload.get("best_recall", 0.0))
         best_r1 = float(resume_payload.get("best_recall_at_1", 0.0))
         not_improved = int(resume_payload.get("not_improved", 0))
+        if args.early_stop_rank == 1 and "not_improved_r1" not in resume_payload:
+            raise ValueError("Legacy checkpoint has no R@1 patience counter; cannot resume R@1 stopping")
+        not_improved_r1 = int(resume_payload.get("not_improved_r1", 0))
         run_dir = args.checkpoint.resolve().parent.parent
     else:
         start_epoch = 0
         best = 0.0
         best_r1 = 0.0
         not_improved = 0
+        not_improved_r1 = 0
         pruning_tag = (
             f"_prune{str(args.pruning_ratio).replace('.', 'p')}" if args.pruning else ""
         )
@@ -467,6 +478,8 @@ def main(argv: list[str] | None = None) -> int:
         run_dir = paths.runs_root / datetime.now().strftime(
             f"%Y%m%d_%H%M%S_{model.arch}_{args.pooling}{pruning_tag}{kd_tag}"
         )
+        if args.run_dir is not None:
+            run_dir = args.run_dir.resolve()
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(str(run_dir))
@@ -494,6 +507,8 @@ def main(argv: list[str] | None = None) -> int:
         teacher = teacher.cpu()
         torch.cuda.empty_cache()
     try:
+        stop_reason = "max_epochs"
+        completed_epoch = start_epoch
         for epoch in range(start_epoch + 1, args.epochs + 1):
             epoch_learning_rate = optimizer.param_groups[0]["lr"]
             losses = train_one_epoch(
@@ -523,6 +538,7 @@ def main(argv: list[str] | None = None) -> int:
             is_best = recalls[5] > best
             is_best_r1 = recalls[1] > best_r1
             not_improved = 0 if is_best else not_improved + 1
+            not_improved_r1 = 0 if is_best_r1 else not_improved_r1 + 1
             best = max(best, recalls[5])
             best_r1 = max(best_r1, recalls[1])
             report = parameter_report(model)
@@ -534,6 +550,9 @@ def main(argv: list[str] | None = None) -> int:
                 best_recall=best,
                 best_recall_at_1=best_r1,
                 not_improved=not_improved,
+                not_improved_r1=not_improved_r1,
+                early_stop_rank=args.early_stop_rank,
+                patience=args.patience,
                 optimizer=optimizer.state_dict(),
                 scheduler=scheduler.state_dict(),
                 learning_rate=epoch_learning_rate,
@@ -569,15 +588,27 @@ def main(argv: list[str] | None = None) -> int:
                 "zero_parameters": report.zero,
             }
             _append_epoch_metrics(metrics_path, row)
+            completed_epoch = epoch
             print(json.dumps(row), flush=True)
-            if args.patience > 0 and not_improved > args.patience:
+            stalled = not_improved_r1 if args.early_stop_rank == 1 else not_improved
+            if args.patience > 0 and stalled >= args.patience:
+                stop_reason = "early_stopping"
                 print(
-                    f"early_stopping=R@5 did not improve for {not_improved} epochs",
+                    f"early_stopping=R@{args.early_stop_rank} did not improve for {stalled} epochs",
                     flush=True,
                 )
                 break
     finally:
         writer.close()
+    (run_dir / "training_complete.json").write_text(json.dumps({
+        "completed_epoch": completed_epoch,
+        "stop_reason": stop_reason,
+        "early_stop_rank": args.early_stop_rank,
+        "patience": args.patience,
+        "not_improved_r1": not_improved_r1,
+        "not_improved_r5": not_improved,
+        "finished_at": datetime.now().astimezone().isoformat(),
+    }, indent=2))
     print(f"run_dir={run_dir}")
     return 0
 

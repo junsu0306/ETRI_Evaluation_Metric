@@ -1,0 +1,17 @@
+{
+  "checkpoint": "artifacts/runs/20260909_193616_v3_teacher14_gpu1_r1p10_mobilenetv3large_c76_kdon/checkpoints/best_r1_reduced.pt",
+  "checkpoint_epoch": 24,
+  "split": "test",
+  "recalls": {
+    "recall@1": 0.8174882629107981,
+    "recall@5": 0.903462441314554,
+    "recall@10": 0.9273767605633803,
+    "recall@20": 0.9490903755868545
+  },
+  "parameter_report": {
+    "total": 2530642,
+    "trainable": 511570,
+    "nonzero": 2530642,
+    "zero": 0
+  }
+}

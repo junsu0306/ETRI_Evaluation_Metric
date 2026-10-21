@@ -1,47 +1,25 @@
-# 코드 구조와 이전 구현 대응
+# 코드 구조
 
-## 실행 흐름
-
-1. `cluster`: CNN local descriptor 50,000개를 표본화하고 Faiss K-means로 NetVLAD centroid를 만든다.
-2. `train`: 전체 train descriptor cache를 생성하고 hard-positive/hard-negative triplet을 채굴한다.
-3. 최종 NetVLAD descriptor로 만든 query–candidate cosine similarity 분포에 관계 KD를 적용한다.
-   현재 loss는 `(1 - kd_weight) * triplet + kd_weight * KD`이며 student에만 gradient가 흐른다.
-4. `--pruning`이 지정된 경우 MobileNetV2 마지막 projection output 또는
-   MobileNetV3-Large 마지막 블록의 expansion channel을 지정 비율로 zeroing한다.
-5. `reduce`: zero filter를 실제 채널에서 제거하고 NetVLAD assignment convolution과 centroid 차원도 함께 줄인다.
-6. `test`: database/query descriptor를 생성하고 Faiss L2 검색으로 Recall@N을 계산한다.
-
-## 이전 파일 대응
-
-| 이전 코드 | 새 코드 |
+| 모듈 | 역할 |
 |---|---|
-| `main_for_KD.py`, `args.py` | `src/robot_compression/cli.py`, `config.py` |
-| `trainer.py` | `src/robot_compression/training/engine.py` |
-| `netvlad.py` | `src/robot_compression/models/netvlad.py` |
-| `pittsburgh.py` | `src/robot_compression/data/pittsburgh.py` |
-| `utils/pruning/common.py` | `src/robot_compression/compression/mobilenet.py` |
-| `reducing.ipynb` | CLI의 `reduce` 모드 |
+| `src/robot_compression/cli.py` | `check`, `smoke`, `cluster`, `train`, `reduce`, `test`; checkpoint·CSV 기록 |
+| `config.py` | `.env` 로드와 저장소 기준 데이터/run/cache 경로 |
+| `models/factory.py` | 백본, 학습 가능 블록, NetVLAD 모델 구성 |
+| `models/netvlad.py` | assignment, residual aggregation, L2 normalization |
+| `data/pittsburgh.py` | split 로드, 전처리, positive/negative 선택과 triplet 구성 |
+| `training/engine.py` | feature cache, 관계 KD, triplet 학습, Recall 평가 |
+| `compression/mobilenet.py` | V2/V3 zero pruning, 연결 축을 함께 줄이는 구조 축소 |
+| `kd_control.py` | 최종 80% 대조군의 `0.5 × Triplet` 학습 진입점 |
 
-## 수정된 주요 오류
+실행 순서는 데이터 준비 → backbone별 centroid → teacher 학습·선택 → student 학습 →
+validation 최고 모델 선택 → 구조 축소 → test다. 상세 명령은 [재현 안내](REPRODUCING.md)에 있다.
 
-- student KD logits를 `no_grad` 밖에서 계산해 KD gradient가 student로 흐르게 했다.
-- 단, 구버전은 student logits까지 `no_grad` 안에서 계산해 실제 KD gradient가
-  없었다. 서로 독립적으로 생성한 teacher/student K-means cluster 번호도 정렬돼
-  있지 않으므로 soft-assignment KD는 구버전 재현값으로 간주하지 않는다.
-  2026-08-31 재현 비교는 `--kd-weight 0`의 triplet + pruning으로 수행했다.
-- 2026-09-08 종료한 관계 KD 실험은 cluster logit 직접 정렬을 사용하지 않는다.
-  [최신 구현 및 대조실험 결과](KD_ABLATION_FINAL_20260908.md)에 수식과 결과를 기록했다.
-- 프루닝을 `--pruning` 사용 시에만 실행하고 `--pruning-ratio` 값을 적용한다.
-- test 시 임의의 `reduced_model.pth`를 강제로 읽지 않고 명시된 checkpoint만 사용한다.
-- 구버전 `pretrained=True` 조건을 재현하기 위해 MobileNetV2 backbone은
-  `IMAGENET1K_V1`으로 고정하고 centroid 파일명에도 해당 revision을 기록한다.
-- 데이터, teacher, centroid, checkpoint가 없으면 조용히 임의 초기화하지 않고 즉시 오류를 낸다.
-- 물리 GPU 2와 논리 `cuda:0`의 매핑을 하나로 통일했다.
-- 전체 모델 pickle 대신 구조 메타데이터와 `state_dict`를 저장한다.
-- 구조 축소 checkpoint에서는 shape가 맞지 않아 재개할 수 없는 원본
-  optimizer/scheduler 상태를 제외한다.
+Teacher와 student는 descriptor 차원이 달라도 query–candidate 검색 분포로 KD를 계산한다.
+Teacher는 고정하고 student만 gradient를 받는다. 앞쪽 backbone의 BatchNorm 통계도 학습 중 고정한다.
 
-26% pruning을 30 epoch 수행한 실제 구조 축소 결과와 모든 비교 실험은
-[`EXPERIMENT_SUMMARY.md`](EXPERIMENT_SUMMARY.md)에 정리돼 있다.
-구현 단위, tensor shape, 학습·pruning·reduction 방법론과 최종 결과를 통합한
-문서는 [`implmentation.md`](implmentation.md)다.
+V3는 마지막 블록 내부 expansion 채널과 연결된 BN/depthwise/SE/projection을 줄이며 출력은
+160채널로 유지한다. V2는 마지막 projection 출력 채널과 NetVLAD assignment/centroid 차원까지 줄인다.
+
+Checkpoint는 구조 metadata와 `state_dict`를 저장한다. 구조가 축소된 checkpoint는 추론용이며
+optimizer/scheduler가 제거되어 학습 재개에 사용하지 않는다.
+테스트는 모델 수식, KD gradient, pruning 전후 descriptor, R@1 checkpoint 선택 및 조기 종료를 검증한다.

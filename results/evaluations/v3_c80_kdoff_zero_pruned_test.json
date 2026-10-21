@@ -1,0 +1,17 @@
+{
+  "checkpoint": "artifacts/runs/20260910_112458_v3_c80_kdoff_triplet0p5_gpu1_mobilenetv3large_c80_kdoff_triplet0p5/checkpoints/best_r1.pt",
+  "checkpoint_epoch": 27,
+  "split": "test",
+  "recalls": {
+    "recall@1": 0.7919600938967136,
+    "recall@5": 0.89231220657277,
+    "recall@10": 0.9212147887323944,
+    "recall@20": 0.9420481220657277
+  },
+  "parameter_report": {
+    "total": 2836912,
+    "trainable": 817840,
+    "nonzero": 2445152,
+    "zero": 391760
+  }
+}

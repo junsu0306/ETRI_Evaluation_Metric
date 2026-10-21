@@ -1,1 +1,0 @@
-python main_variant.py --mode=cluster --arch=mobilenetv3 --pooling=netvlad --num_clusters=64

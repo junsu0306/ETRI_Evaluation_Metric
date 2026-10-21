@@ -1,0 +1,17 @@
+{
+  "checkpoint": "artifacts/teachers/resnet18_seed42_epoch14/teacher.pt",
+  "checkpoint_epoch": 14,
+  "split": "test",
+  "recalls": {
+    "recall@1": 0.8559272300469484,
+    "recall@5": 0.9197476525821596,
+    "recall@10": 0.9395539906103286,
+    "recall@20": 0.9534917840375586
+  },
+  "parameter_report": {
+    "total": 2815552,
+    "trainable": 2132480,
+    "nonzero": 2815552,
+    "zero": 0
+  }
+}

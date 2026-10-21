@@ -1,0 +1,17 @@
+{
+  "checkpoint": "artifacts/experiments/20260909_193616_v3_teacher14_gpu1_r1p10/v2_kdon_best_r1_reduced.pt",
+  "checkpoint_epoch": 37,
+  "split": "val",
+  "recalls": {
+    "recall@1": 0.8201892744479495,
+    "recall@5": 0.9351997896950578,
+    "recall@10": 0.9596477392218717,
+    "recall@20": 0.9771293375394322
+  },
+  "parameter_report": {
+    "total": 1800352,
+    "trainable": 462560,
+    "nonzero": 1800352,
+    "zero": 0
+  }
+}
